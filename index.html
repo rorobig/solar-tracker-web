@@ -35,7 +35,7 @@
     .bar-track { flex: 1; height: 18px; background: #f5f5f5; border-radius: 4px; overflow: hidden; position: relative; }
     .bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; transition: width 0.4s ease; }
     .bar-fill span { font-size: 10px; color: #fff; font-weight: 500; }
-    .window-highlight { position: absolute; top: 0; bottom: 0; background: rgba(99,153,34,0.15); border-left: 2px solid #639922; pointer-events: none; }
+    .window-highlight { position: absolute; top: 0; bottom: 0; left: 0; right: 0; background: rgba(99,153,34,0.15); border-left: 2px solid #639922; pointer-events: none; }
     .now-tag { font-size: 10px; color: #639922; font-weight: 500; }
     .window-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .window-block { border-radius: 8px; padding: 10px 12px; border: 1px solid #e0e0e0; }
@@ -103,18 +103,24 @@
 
   function showErr(m) {
     const e = document.getElementById('errMsg');
-    e.textContent = m; e.style.display = 'block';
+    e.textContent = m;
+    e.style.display = 'block';
     document.getElementById('spinner').style.display = 'none';
   }
+
   function setLoading(on) {
     document.getElementById('errMsg').style.display = 'none';
     document.getElementById('spinner').style.display = on ? 'flex' : 'none';
-    document.getElementById('results').style.display = on ? 'none' : 'block';
+    if (!on && cachedData) {
+      document.getElementById('results').style.display = 'block';
+    }
   }
+
   function fmtTime(iso) {
     if (!iso) return '—';
     return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
+
   function barColor(pct, isNow) {
     if (isNow) return '#1D9E75';
     if (pct > 70) return '#639922';
@@ -122,12 +128,11 @@
     return '#B4B2A9';
   }
 
-  // sliding window — finds best N-hour block
   function bestWindow(total, times, windowSize) {
     let bestSum = -1, bestIdx = 0;
     for (let i = 0; i <= total.length - windowSize; i++) {
       const h = parseInt(times[i].split('T')[1]);
-      if (h < 6 || h + windowSize > 20) continue; // keep within daylight
+      if (h < 6 || h + windowSize > 20) continue;
       const sum = total.slice(i, i + windowSize).reduce((a, b) => a + b, 0);
       if (sum > bestSum) { bestSum = sum; bestIdx = i; }
     }
@@ -135,7 +140,6 @@
   }
 
   async function fetchByCoords(lat, lon) {
-    setLoading(true);
     try {
       const today = new Date().toISOString().split('T')[0];
       const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=direct_radiation,diffuse_radiation&daily=sunrise,sunset&timezone=auto&start_date=${today}&end_date=${today}`);
@@ -164,16 +168,23 @@
     }
   }
 
-  async function useGPS() {
-    if (!navigator.geolocation) { showErr('GPS not available in this browser'); return; }
-    setLoading(true);
+  function useGPS() {
+    if (!navigator.geolocation) {
+      showErr('GPS not available in this browser');
+      return;
+    }
+    document.getElementById('errMsg').style.display = 'none';
+    document.getElementById('spinner').style.display = 'flex';
     navigator.geolocation.getCurrentPosition(
       pos => fetchByCoords(pos.coords.latitude, pos.coords.longitude),
-      () => showErr('Location denied. Please enter your city manually.')
+      err => {
+        document.getElementById('spinner').style.display = 'none';
+        showErr('Could not get location (' + err.message + '). Try entering your city manually.');
+      },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
     );
   }
 
-  // re-render with new duration without re-fetching
   document.getElementById('duration').addEventListener('change', () => {
     if (cachedData) render(cachedData);
   });
@@ -188,7 +199,6 @@
     const nowH = new Date().getHours();
     const nowV = total[nowH] || 0;
 
-    // best sliding window
     const best = bestWindow(total, times, duration);
     const bestH = parseInt(times[best.idx].split('T')[1]);
     const bestEndH = bestH + duration;
@@ -203,7 +213,6 @@
     document.getElementById('windowsTitle').textContent =
       `Top ${duration}-hour windows today`;
 
-    // bar chart with best window highlighted
     const bar = document.getElementById('barChart');
     bar.innerHTML = '';
     times.forEach((t, i) => {
@@ -220,13 +229,12 @@
             <div class="bar-fill" style="width:${pct}%;background:${barColor(pct, isNow)};">
               ${pct > 12 ? `<span>${Math.round(v)}</span>` : ''}
             </div>
-            ${inBestWindow ? '<div class="window-highlight" style="left:0;right:0;"></div>' : ''}
+            ${inBestWindow ? '<div class="window-highlight"></div>' : ''}
           </div>
           ${isNow ? '<span class="now-tag">NOW</span>' : ''}
         </div>`;
     });
 
-    // rank all valid windows by sum
     const windows = [];
     for (let i = 0; i <= total.length - duration; i++) {
       const h = parseInt(times[i].split('T')[1]);
@@ -236,7 +244,6 @@
     }
     windows.sort((a, b) => b.sum - a.sum);
 
-    // remove overlapping windows for cleaner list
     const shown = [];
     for (const w of windows) {
       const overlaps = shown.some(s => Math.abs(s.h - w.h) < duration);
