@@ -81,7 +81,6 @@
 
   <div id="results">
     <div class="tabs" id="tabs"></div>
-
     <div class="metrics">
       <div class="metric"><div class="metric-label">Best start time</div><div class="metric-value" id="bestTime">—</div><div class="metric-sub" id="bestWindow">—</div></div>
       <div class="metric"><div class="metric-label">Peak power</div><div class="metric-value" id="peakPower">—</div><div class="metric-sub">W/m² max</div></div>
@@ -110,16 +109,16 @@
 
   const DAY_NAMES = ['Today', 'Tomorrow'];
 
-  function dayLabel(offsetDays) {
-    if (offsetDays < 2) return DAY_NAMES[offsetDays];
+  function dayLabel(i) {
+    if (i < 2) return DAY_NAMES[i];
     const d = new Date();
-    d.setDate(d.getDate() + offsetDays);
+    d.setDate(d.getDate() + i);
     return d.toLocaleDateString([], { weekday: 'short' });
   }
 
-  function dayDate(offsetDays) {
+  function dayDate(i) {
     const d = new Date();
-    d.setDate(d.getDate() + offsetDays);
+    d.setDate(d.getDate() + i);
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
 
@@ -133,9 +132,7 @@
   function setLoading(on) {
     document.getElementById('errMsg').style.display = 'none';
     document.getElementById('spinner').style.display = on ? 'flex' : 'none';
-    if (!on && cachedData) {
-      document.getElementById('results').style.display = 'block';
-    }
+    if (!on && cachedData) document.getElementById('results').style.display = 'block';
   }
 
   function fmtTime(iso) {
@@ -159,6 +156,44 @@
       if (sum > bestSum) { bestSum = sum; bestIdx = i; }
     }
     return { idx: bestIdx, sum: bestSum, avg: bestSum / windowSize };
+  }
+
+  function getBestDayIdx() {
+    const duration = Math.max(1, parseInt(document.getElementById('duration').value) || 3);
+    let bestDayIdx = 0, bestDaySum = -1;
+    for (let d = 0; d < 4; d++) {
+      const start = d * 24;
+      const times = cachedData.hourly.time.slice(start, start + 24);
+      const total = times.map((_, i) =>
+        (cachedData.hourly.direct_radiation[start + i] || 0) +
+        (cachedData.hourly.diffuse_radiation[start + i] || 0)
+      );
+      const best = bestWindow(total, times, duration);
+      if (best.sum > bestDaySum) { bestDaySum = best.sum; bestDayIdx = d; }
+    }
+    return bestDayIdx;
+  }
+
+  function buildTabs() {
+    const bestDayIdx = getBestDayIdx();
+    const tabs = document.getElementById('tabs');
+    tabs.innerHTML = '';
+    for (let i = 0; i < 4; i++) {
+      const isBest = i === bestDayIdx;
+      const isActive = i === selectedDay;
+      tabs.innerHTML += `
+        <button class="tab ${isActive ? 'active' : ''}" onclick="selectDay(${i})"
+          style="${isBest && !isActive ? 'border-color:#639922;color:#639922;' : ''}">
+          ${dayLabel(i)}${isBest ? ' ☀️' : ''}
+          <span class="tab-day">${dayDate(i)}</span>
+        </button>`;
+    }
+  }
+
+  function selectDay(i) {
+    selectedDay = i;
+    buildTabs();
+    render();
   }
 
   async function fetchByCoords(lat, lon) {
@@ -209,39 +244,17 @@
     );
   }
 
-  function buildTabs() {
-    const tabs = document.getElementById('tabs');
-    tabs.innerHTML = '';
-    for (let i = 0; i < 4; i++) {
-      tabs.innerHTML += `
-        <button class="tab ${i === selectedDay ? 'active' : ''}" onclick="selectDay(${i})">
-          ${dayLabel(i)}
-          <span class="tab-day">${dayDate(i)}</span>
-        </button>`;
-    }
-  }
-
-  function selectDay(i) {
-    selectedDay = i;
-    buildTabs();
-    render();
-  }
-
   document.getElementById('duration').addEventListener('change', () => {
-    if (cachedData) render();
+    if (cachedData) { buildTabs(); render(); }
   });
 
   function render() {
     const duration = Math.max(1, parseInt(document.getElementById('duration').value) || 3);
-    const allTimes = cachedData.hourly.time;
-    const allDirect = cachedData.hourly.direct_radiation;
-    const allDiffuse = cachedData.hourly.diffuse_radiation;
-
-    // filter to selected day only (each day has 24 entries)
     const start = selectedDay * 24;
-    const times = allTimes.slice(start, start + 24);
+    const times = cachedData.hourly.time.slice(start, start + 24);
     const total = times.map((_, i) =>
-      (allDirect[start + i] || 0) + (allDiffuse[start + i] || 0)
+      (cachedData.hourly.direct_radiation[start + i] || 0) +
+      (cachedData.hourly.diffuse_radiation[start + i] || 0)
     );
 
     const maxVal = Math.max(...total, 1);
@@ -257,12 +270,9 @@
     document.getElementById('peakPower').textContent = Math.round(maxVal);
     document.getElementById('sunrise').textContent = fmtTime(cachedData.daily.sunrise?.[selectedDay]);
     document.getElementById('sunset').textContent = fmtTime(cachedData.daily.sunset?.[selectedDay]);
-
-    const nowV = isToday ? (total[nowH] || 0) : null;
     document.getElementById('nowRow').textContent = isToday
-      ? `Now (${nowH}:00): ${Math.round(nowV)} W/m² — ${Math.round((nowV / maxVal) * 100)}% of peak`
+      ? `Now (${nowH}:00): ${Math.round(total[nowH] || 0)} W/m² — ${Math.round(((total[nowH] || 0) / maxVal) * 100)}% of peak`
       : `Forecast for ${dayLabel(selectedDay)}, ${dayDate(selectedDay)}`;
-
     document.getElementById('windowsTitle').textContent = `Top ${duration}-hour windows`;
 
     const bar = document.getElementById('barChart');
