@@ -23,6 +23,10 @@
     .duration-row label { font-size: 13px; color: #666; white-space: nowrap; }
     .duration-row input { width: 60px; margin-bottom: 0; text-align: center; }
     .duration-row span { font-size: 13px; color: #666; }
+    .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+    .tab { flex: 1; padding: 8px 4px; border: 0.5px solid #e0e0e0; border-radius: 8px; background: #fff; font-size: 12px; cursor: pointer; text-align: center; line-height: 1.3; }
+    .tab.active { background: #639922; color: #fff; border-color: #639922; font-weight: 500; }
+    .tab .tab-day { font-size: 11px; opacity: 0.8; display: block; }
     .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
     .metric { background: #fff; border-radius: 8px; padding: 12px; border: 0.5px solid #e0e0e0; }
     .metric-label { font-size: 11px; color: #666; margin-bottom: 4px; }
@@ -76,6 +80,8 @@
   <div id="spinner" class="spinner" style="display:none;"><div></div></div>
 
   <div id="results">
+    <div class="tabs" id="tabs"></div>
+
     <div class="metrics">
       <div class="metric"><div class="metric-label">Best start time</div><div class="metric-value" id="bestTime">—</div><div class="metric-sub" id="bestWindow">—</div></div>
       <div class="metric"><div class="metric-label">Peak power</div><div class="metric-value" id="peakPower">—</div><div class="metric-sub">W/m² max</div></div>
@@ -83,7 +89,7 @@
       <div class="metric"><div class="metric-label">Sunset</div><div class="metric-value" id="sunset">—</div><div class="metric-sub">Local time</div></div>
     </div>
     <div class="card">
-      <p class="section-title">Hourly solar power today</p>
+      <p class="section-title">Hourly solar power</p>
       <p class="now-row" id="nowRow"></p>
       <div id="barChart"></div>
     </div>
@@ -100,6 +106,22 @@
 
 <script>
   let cachedData = null;
+  let selectedDay = 0;
+
+  const DAY_NAMES = ['Today', 'Tomorrow'];
+
+  function dayLabel(offsetDays) {
+    if (offsetDays < 2) return DAY_NAMES[offsetDays];
+    const d = new Date();
+    d.setDate(d.getDate() + offsetDays);
+    return d.toLocaleDateString([], { weekday: 'short' });
+  }
+
+  function dayDate(offsetDays) {
+    const d = new Date();
+    d.setDate(d.getDate() + offsetDays);
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
 
   function showErr(m) {
     const e = document.getElementById('errMsg');
@@ -142,10 +164,15 @@
   async function fetchByCoords(lat, lon) {
     try {
       const today = new Date().toISOString().split('T')[0];
-      const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=direct_radiation,diffuse_radiation&daily=sunrise,sunset&timezone=auto&start_date=${today}&end_date=${today}`);
+      const future = new Date();
+      future.setDate(future.getDate() + 3);
+      const endDate = future.toISOString().split('T')[0];
+      const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=direct_radiation,diffuse_radiation&daily=sunrise,sunset&timezone=auto&start_date=${today}&end_date=${endDate}`);
       const data = await res.json();
       cachedData = data;
-      render(data);
+      selectedDay = 0;
+      buildTabs();
+      render();
       setLoading(false);
     } catch {
       showErr('Could not load solar data. Check your connection.');
@@ -169,10 +196,7 @@
   }
 
   function useGPS() {
-    if (!navigator.geolocation) {
-      showErr('GPS not available in this browser');
-      return;
-    }
+    if (!navigator.geolocation) { showErr('GPS not available in this browser'); return; }
     document.getElementById('errMsg').style.display = 'none';
     document.getElementById('spinner').style.display = 'flex';
     navigator.geolocation.getCurrentPosition(
@@ -185,19 +209,44 @@
     );
   }
 
+  function buildTabs() {
+    const tabs = document.getElementById('tabs');
+    tabs.innerHTML = '';
+    for (let i = 0; i < 4; i++) {
+      tabs.innerHTML += `
+        <button class="tab ${i === selectedDay ? 'active' : ''}" onclick="selectDay(${i})">
+          ${dayLabel(i)}
+          <span class="tab-day">${dayDate(i)}</span>
+        </button>`;
+    }
+  }
+
+  function selectDay(i) {
+    selectedDay = i;
+    buildTabs();
+    render();
+  }
+
   document.getElementById('duration').addEventListener('change', () => {
-    if (cachedData) render(cachedData);
+    if (cachedData) render();
   });
 
-  function render(data) {
+  function render() {
     const duration = Math.max(1, parseInt(document.getElementById('duration').value) || 3);
-    const times = data.hourly.time;
+    const allTimes = cachedData.hourly.time;
+    const allDirect = cachedData.hourly.direct_radiation;
+    const allDiffuse = cachedData.hourly.diffuse_radiation;
+
+    // filter to selected day only (each day has 24 entries)
+    const start = selectedDay * 24;
+    const times = allTimes.slice(start, start + 24);
     const total = times.map((_, i) =>
-      (data.hourly.direct_radiation[i] || 0) + (data.hourly.diffuse_radiation[i] || 0)
+      (allDirect[start + i] || 0) + (allDiffuse[start + i] || 0)
     );
+
     const maxVal = Math.max(...total, 1);
     const nowH = new Date().getHours();
-    const nowV = total[nowH] || 0;
+    const isToday = selectedDay === 0;
 
     const best = bestWindow(total, times, duration);
     const bestH = parseInt(times[best.idx].split('T')[1]);
@@ -206,12 +255,15 @@
     document.getElementById('bestTime').textContent = `${bestH}:00`;
     document.getElementById('bestWindow').textContent = `Run until ${bestEndH}:00 (${duration}h window)`;
     document.getElementById('peakPower').textContent = Math.round(maxVal);
-    document.getElementById('sunrise').textContent = fmtTime(data.daily.sunrise?.[0]);
-    document.getElementById('sunset').textContent = fmtTime(data.daily.sunset?.[0]);
-    document.getElementById('nowRow').textContent =
-      `Now (${nowH}:00): ${Math.round(nowV)} W/m² — ${Math.round((nowV / maxVal) * 100)}% of peak`;
-    document.getElementById('windowsTitle').textContent =
-      `Top ${duration}-hour windows today`;
+    document.getElementById('sunrise').textContent = fmtTime(cachedData.daily.sunrise?.[selectedDay]);
+    document.getElementById('sunset').textContent = fmtTime(cachedData.daily.sunset?.[selectedDay]);
+
+    const nowV = isToday ? (total[nowH] || 0) : null;
+    document.getElementById('nowRow').textContent = isToday
+      ? `Now (${nowH}:00): ${Math.round(nowV)} W/m² — ${Math.round((nowV / maxVal) * 100)}% of peak`
+      : `Forecast for ${dayLabel(selectedDay)}, ${dayDate(selectedDay)}`;
+
+    document.getElementById('windowsTitle').textContent = `Top ${duration}-hour windows`;
 
     const bar = document.getElementById('barChart');
     bar.innerHTML = '';
@@ -220,7 +272,7 @@
       if (h < 5 || h > 21) return;
       const v = total[i] || 0;
       const pct = Math.round((v / maxVal) * 100);
-      const isNow = h === nowH;
+      const isNow = isToday && h === nowH;
       const inBestWindow = h >= bestH && h < bestEndH;
       bar.innerHTML += `
         <div class="bar-row">
